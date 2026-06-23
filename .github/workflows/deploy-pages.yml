@@ -17,12 +17,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip game
+      - name: Unzip and locate game
         run: |
-          mkdir site
-          ZIP_FILE=$(ls *.zip | head -n 1)
-          unzip -o "$ZIP_FILE" -d site
-          find site -maxdepth 2 -type f
+          rm -rf site extracted
+          mkdir extracted site
+
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          echo "Using ZIP: $ZIP_FILE"
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          GAME_DIR=$(find extracted -name index.html -type f | head -n 1 | xargs dirname)
+          echo "Game folder: $GAME_DIR"
+
+          if [ -z "$GAME_DIR" ]; then
+            echo "No index.html found"
+            exit 1
+          fi
+
+          cp -r "$GAME_DIR"/* site/
+
+          echo "Publishing:"
+          find site -maxdepth 3 -type f
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
