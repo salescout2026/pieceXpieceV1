@@ -1,4 +1,4 @@
-name: Deploy ZIP to GitHub Pages
+name: Deploy newest ZIP to GitHub Pages
 
 on:
   push:
@@ -10,30 +10,55 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Unzip and locate game
+      - name: Unzip newest game package
         run: |
+          set -euo pipefail
+
           rm -rf site extracted
           mkdir extracted site
 
-          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
-          echo "Using ZIP: $ZIP_FILE"
+          ZIP_FILE=""
+          NEWEST_TIME=0
 
-          unzip -o "$ZIP_FILE" -d extracted
+          while IFS= read -r -d '' candidate; do
+            commit_time=$(git log -1 --format=%ct -- "$candidate" 2>/dev/null || echo 0)
+            echo "Found ZIP: $candidate (last changed: $commit_time)"
 
-          GAME_DIR=$(find extracted -name index.html -type f | head -n 1 | xargs dirname)
-          echo "Game folder: $GAME_DIR"
+            if [ "$commit_time" -gt "$NEWEST_TIME" ]; then
+              NEWEST_TIME="$commit_time"
+              ZIP_FILE="$candidate"
+            fi
+          done < <(find . -maxdepth 1 -type f -iname "*.zip" -print0)
 
-          if [ -z "$GAME_DIR" ]; then
-            echo "No index.html found"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No root-level .zip file found to deploy."
             exit 1
           fi
+
+          echo "Using newest ZIP: $ZIP_FILE"
+          unzip -o "$ZIP_FILE" -d extracted
+
+          GAME_INDEX=$(find extracted -name index.html -type f | head -n 1)
+          if [ -z "$GAME_INDEX" ]; then
+            echo "No index.html found inside $ZIP_FILE"
+            exit 1
+          fi
+
+          GAME_DIR=$(dirname "$GAME_INDEX")
+          echo "Game folder: $GAME_DIR"
 
           cp -r "$GAME_DIR"/* site/
 
