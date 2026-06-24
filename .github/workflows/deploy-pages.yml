@@ -1,8 +1,13 @@
-name: Deploy newest ZIP to GitHub Pages
+name: Deploy newest QuestForge ZIP to GitHub Pages
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - 'QuestForge_Current_v*.zip'
+      - 'QuestForge_Current.zip'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -11,60 +16,63 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: github-pages-deploy
   cancel-in-progress: true
 
 jobs:
   deploy:
+    name: Deploy QuestForge
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Unzip highest versioned game package
+      - name: Find and extract newest QuestForge ZIP
+        shell: bash
         run: |
           set -euo pipefail
 
           rm -rf site extracted
-          mkdir -p extracted site
+          mkdir -p site extracted
 
           ZIP_FILE="$(find . -maxdepth 1 -type f -name 'QuestForge_Current_v*.zip' -printf '%f\n' | sort -V | tail -n 1)"
 
-          if [ -z "$ZIP_FILE" ]; then
+          if [ -z "${ZIP_FILE}" ]; then
             if [ -f "QuestForge_Current.zip" ]; then
               ZIP_FILE="QuestForge_Current.zip"
             else
-              echo "No QuestForge_Current_v*.zip or QuestForge_Current.zip file found to deploy."
+              echo "No QuestForge_Current_v*.zip or QuestForge_Current.zip file found."
               exit 1
             fi
           fi
 
-          echo "Using game ZIP: $ZIP_FILE"
-          unzip -o "$ZIP_FILE" -d extracted
+          echo "Deploying ${ZIP_FILE}"
+          unzip -o "${ZIP_FILE}" -d extracted
 
-          GAME_INDEX="$(find extracted -name index.html -type f | head -n 1)"
-          if [ -z "$GAME_INDEX" ]; then
-            echo "No index.html found inside $ZIP_FILE"
+          GAME_INDEX="$(find extracted -type f -name index.html | head -n 1)"
+          if [ -z "${GAME_INDEX}" ]; then
+            echo "No index.html found inside ${ZIP_FILE}"
             exit 1
           fi
 
-          GAME_DIR="$(dirname "$GAME_INDEX")"
-          echo "Game folder: $GAME_DIR"
+          GAME_DIR="$(dirname "${GAME_INDEX}")"
+          echo "Game directory: ${GAME_DIR}"
 
-          cp -r "$GAME_DIR"/* site/
+          cp -R "${GAME_DIR}/." site/
 
-          echo "Publishing:"
-          find site -maxdepth 3 -type f
+          if [ ! -f "site/index.html" ]; then
+            echo "site/index.html was not created."
+            exit 1
+          fi
 
-      - name: Setup Pages
+      - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload Pages artifact
+      - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
