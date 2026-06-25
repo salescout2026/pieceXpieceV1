@@ -1,0 +1,115 @@
+name: Deploy QuestForge Repo ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "QuestForge_Current_v*.zip"
+      - "QuestForge_Current.zip"
+      - ".github/workflows/deploy-questforge-repo-zip.yml"
+  workflow_dispatch:
+    inputs:
+      zip_pattern:
+        description: "ZIP pattern to deploy"
+        required: false
+        default: "QuestForge_Current_v*.zip"
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: questforge-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy-repo-zip:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select newest QuestForge ZIP
+        id: select_zip
+        env:
+          ZIP_PATTERN: ${{ inputs.zip_pattern }}
+        run: |
+          set -euo pipefail
+
+          PATTERN="${ZIP_PATTERN:-QuestForge_Current_v*.zip}"
+
+          python3 <<'PY'
+          import glob, os, re
+
+          pattern = os.environ.get("ZIP_PATTERN") or "QuestForge_Current_v*.zip"
+          files = glob.glob(pattern)
+
+          if not files:
+              files = glob.glob("QuestForge_Current.zip")
+
+          if not files:
+              raise SystemExit("No QuestForge ZIP found. Expected QuestForge_Current_v*.zip or QuestForge_Current.zip")
+
+          def version_key(path):
+              name = os.path.basename(path)
+              m = re.search(r"_v(\d+)", name, re.I)
+              version = int(m.group(1)) if m else -1
+              return (version, os.path.getmtime(path), name)
+
+          chosen = sorted(files, key=version_key)[-1]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"zip={chosen}\n")
+
+          print(f"Selected ZIP: {chosen}")
+          PY
+
+      - name: Unpack selected ZIP
+        env:
+          BUILD_ZIP: ${{ steps.select_zip.outputs.zip }}
+        run: |
+          set -euo pipefail
+
+          rm -rf unpacked site
+          mkdir -p unpacked site
+
+          unzip -q "$BUILD_ZIP" -d unpacked
+
+          INDEX_PATH="$(find unpacked -name index.html -type f | head -n 1 || true)"
+
+          if [ -z "$INDEX_PATH" ]; then
+            echo "No index.html found inside $BUILD_ZIP"
+            find unpacked -maxdepth 5 -type f | sed 's#^# - #'
+            exit 1
+          fi
+
+          APP_DIR="$(dirname "$INDEX_PATH")"
+          echo "Using app directory: $APP_DIR"
+
+          cp -R "$APP_DIR"/. site/
+
+          cat > site/build-info.json <<EOF
+          {
+            "deployedZip": "$(basename "$BUILD_ZIP")",
+            "deployedAtUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "workflow": "deploy-questforge-repo-zip.yml"
+          }
+          EOF
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
