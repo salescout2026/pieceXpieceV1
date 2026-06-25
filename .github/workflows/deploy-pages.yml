@@ -1,16 +1,16 @@
-name: Deploy QuestForge Release ZIP
+name: Deploy QuestForge Repo ZIP
 
 on:
-  release:
-    types: [published, edited, prereleased, released]
+  push:
+    branches: [main]
+    paths:
+      - "QuestForge_Current_v*.zip"
+      - "QuestForge_Current.zip"
+      - ".github/workflows/deploy-questforge-repo-zip.yml"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag to deploy. Leave blank for latest release."
-        required: false
-        type: string
-      asset_pattern:
-        description: "Release asset ZIP pattern to deploy."
+      zip_pattern:
+        description: "ZIP pattern to deploy"
         required: false
         default: "QuestForge_Current_v*.zip"
         type: string
@@ -25,94 +25,82 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy-release-zip:
+  deploy-repo-zip:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Resolve release tag and pattern
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-          INPUT_PATTERN: ${{ inputs.asset_pattern }}
-        run: |
-          set -euo pipefail
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          TAG="${EVENT_TAG:-}"
-          if [ -n "${INPUT_TAG:-}" ]; then
-            TAG="$INPUT_TAG"
-          fi
-          if [ -z "$TAG" ]; then
-            TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
-          fi
-
-          PATTERN="${INPUT_PATTERN:-QuestForge_Current_v*.zip}"
-
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "pattern=$PATTERN" >> "$GITHUB_OUTPUT"
-
-      - name: Download matching QuestForge ZIP asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          PATTERN: ${{ steps.release.outputs.pattern }}
-        run: |
-          set -euo pipefail
-          mkdir -p release_downloads
-
-          echo "Available release assets:"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
-
-          gh release download "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$PATTERN" \
-            --dir release_downloads \
-            --clobber
-
-      - name: Select newest matching build ZIP
+      - name: Select newest QuestForge ZIP
         id: select_zip
+        env:
+          ZIP_PATTERN: ${{ inputs.zip_pattern }}
         run: |
           set -euo pipefail
+
+          PATTERN="${ZIP_PATTERN:-QuestForge_Current_v*.zip}"
+
           python3 <<'PY'
           import glob, os, re
 
-          files = glob.glob('release_downloads/QuestForge_Current_v*.zip')
-          if not files:
-              raise SystemExit('No QuestForge_Current_v*.zip release asset was downloaded.')
+          pattern = os.environ.get("ZIP_PATTERN") or "QuestForge_Current_v*.zip"
+          files = glob.glob(pattern)
 
-          def key(path):
+          if not files:
+              files = glob.glob("QuestForge_Current.zip")
+
+          if not files:
+              raise SystemExit("No QuestForge ZIP found. Expected QuestForge_Current_v*.zip or QuestForge_Current.zip")
+
+          def version_key(path):
               name = os.path.basename(path)
-              m = re.search(r'_v(\d+)', name, re.I)
+              m = re.search(r"_v(\d+)", name, re.I)
               version = int(m.group(1)) if m else -1
               return (version, os.path.getmtime(path), name)
 
-          chosen = sorted(files, key=key)[-1]
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'zip={chosen}\n')
-          print(f'Selected build ZIP: {chosen}')
+          chosen = sorted(files, key=version_key)[-1]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"zip={chosen}\n")
+
+          print(f"Selected ZIP: {chosen}")
           PY
 
-      - name: Unpack build for GitHub Pages
+      - name: Unpack selected ZIP
         env:
           BUILD_ZIP: ${{ steps.select_zip.outputs.zip }}
         run: |
           set -euo pipefail
+
           rm -rf unpacked site
           mkdir -p unpacked site
+
           unzip -q "$BUILD_ZIP" -d unpacked
 
           INDEX_PATH="$(find unpacked -name index.html -type f | head -n 1 || true)"
+
           if [ -z "$INDEX_PATH" ]; then
             echo "No index.html found inside $BUILD_ZIP"
+            find unpacked -maxdepth 5 -type f | sed 's#^# - #'
             exit 1
           fi
 
           APP_DIR="$(dirname "$INDEX_PATH")"
+          echo "Using app directory: $APP_DIR"
+
           cp -R "$APP_DIR"/. site/
+
+          cat > site/build-info.json <<EOF
+          {
+            "deployedZip": "$(basename "$BUILD_ZIP")",
+            "deployedAtUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "workflow": "deploy-questforge-repo-zip.yml"
+          }
+          EOF
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
